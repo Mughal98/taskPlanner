@@ -10,9 +10,15 @@ import {
   Calendar,
   LogOut,
   GripVertical,
+  AlertTriangle,
 } from "lucide-react";
 
-type CalendarProfile = { id: string; name: string; color: string };
+type CalendarProfile = {
+  id: string;
+  name: string;
+  color: string;
+  position: number;
+};
 type User = {
   id: string;
   email: string;
@@ -41,15 +47,24 @@ export default function Sidebar({ user }: { user: User }) {
   const [showProfile, setShowProfile] = useState(false);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<CalendarProfile | null>(
+    null,
+  );
 
   useEffect(() => {
     supabase
       .from("calendars")
       .select("*")
       .eq("user_id", user.id)
-      .order("created_at")
+      .order("position")
       .then(({ data }) => {
-        if (data) setCalendars(data);
+        if (data && data.length > 0) {
+          setCalendars(data);
+        } else if (data) {
+          // If no position set yet, assign positions
+          const withPositions = data.map((c, i) => ({ ...c, position: i }));
+          setCalendars(withPositions);
+        }
       });
   }, []);
 
@@ -60,12 +75,14 @@ export default function Sidebar({ user }: { user: User }) {
   }, [activeCalendar]);
 
   const addCalendar = async () => {
+    const position = calendars.length;
     const { data } = await supabase
       .from("calendars")
       .insert({
         user_id: user.id,
         name: "New Calendar",
         color: COLORS[calendars.length % COLORS.length],
+        position,
       })
       .select()
       .single();
@@ -82,11 +99,13 @@ export default function Sidebar({ user }: { user: User }) {
     );
   };
 
-  const deleteCalendar = async (id: string) => {
+  const deleteCalendar = async (cal: CalendarProfile) => {
     if (calendars.length <= 1) return;
-    await supabase.from("calendars").delete().eq("id", id);
-    setCalendars((prev) => prev.filter((c) => c.id !== id));
-    if (activeCalendar === id) setActiveCalendar("all");
+    await supabase.from("calendars").delete().eq("id", cal.id);
+    setCalendars((prev) => prev.filter((c) => c.id !== cal.id));
+    if (activeCalendar === cal.id) setActiveCalendar("all");
+    setDeleteConfirm(null);
+    setEditingId(null);
   };
 
   const handleSignOut = async () => {
@@ -99,7 +118,7 @@ export default function Sidebar({ user }: { user: User }) {
     e.preventDefault();
     setDragOverId(id);
   };
-  const handleDrop = (targetId: string) => {
+  const handleDrop = async (targetId: string) => {
     if (!draggedId || draggedId === targetId) {
       setDraggedId(null);
       setDragOverId(null);
@@ -110,9 +129,22 @@ export default function Sidebar({ user }: { user: User }) {
     const toIdx = newOrder.findIndex((c) => c.id === targetId);
     const [moved] = newOrder.splice(fromIdx, 1);
     newOrder.splice(toIdx, 0, moved);
-    setCalendars(newOrder);
+
+    // Update positions
+    const withNewPositions = newOrder.map((c, i) => ({ ...c, position: i }));
+    setCalendars(withNewPositions);
     setDraggedId(null);
     setDragOverId(null);
+
+    // Save new order to Supabase
+    await Promise.all(
+      withNewPositions.map((c) =>
+        supabase
+          .from("calendars")
+          .update({ position: c.position })
+          .eq("id", c.id),
+      ),
+    );
   };
 
   const fallbackAvatar = `https://api.dicebear.com/7.x/initials/svg?seed=${user.email}&backgroundColor=333333&textColor=ffffff&fontSize=40`;
@@ -123,6 +155,52 @@ export default function Sidebar({ user }: { user: User }) {
     <aside
       className={`h-full bg-[#161616] border-r border-[#2a2a2a] flex flex-col shrink-0 overflow-hidden transition-[width] duration-300 ease-in-out ${collapsed ? "w-14" : "w-60"}`}
     >
+      {/* Delete confirmation modal */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={() => setDeleteConfirm(null)}
+          />
+          <div className="relative bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-6 w-96 shadow-2xl z-10">
+            <div className="flex items-start gap-3 mb-4">
+              <div className="w-8 h-8 rounded-full bg-red-500/10 flex items-center justify-center shrink-0 mt-0.5">
+                <AlertTriangle size={15} className="text-red-400" />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-white mb-1">
+                  Delete Calendar
+                </h3>
+                <p className="text-sm text-[#888] leading-relaxed">
+                  Are you sure you want to delete{" "}
+                  <span className="text-white font-medium">
+                    "{deleteConfirm.name}"
+                  </span>
+                  ? All tasks in this calendar will be{" "}
+                  <span className="text-red-400 font-medium">
+                    permanently deleted.
+                  </span>
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="px-4 py-2 text-sm text-[#888] hover:text-white border border-[#333] hover:border-[#555] rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => deleteCalendar(deleteConfirm)}
+                className="px-4 py-2 text-sm text-white bg-red-500 hover:bg-red-600 rounded-lg transition-colors"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Top: Logo + collapse */}
       <div className="flex items-center border-b border-[#2a2a2a] py-3 px-3 gap-2">
         <div
@@ -179,10 +257,10 @@ export default function Sidebar({ user }: { user: User }) {
                 setDragOverId(null);
               }}
               className={`group flex items-center gap-3 cursor-pointer transition-all py-2
-                 ${collapsed ? "justify-center px-0" : "px-5"}
-                 ${activeCalendar === cal.id ? "bg-[#222]" : "hover:bg-[#1e1e1e]"}
-                 ${dragOverId === cal.id ? "border-t-2 border-[#6366f1]" : ""}
-                 ${draggedId === cal.id ? "opacity-40" : ""}`}
+                ${collapsed ? "justify-center px-0" : "px-5"}
+                ${activeCalendar === cal.id ? "bg-[#222]" : "hover:bg-[#1e1e1e]"}
+                ${dragOverId === cal.id ? "border-t-2 border-[#6366f1]" : ""}
+                ${draggedId === cal.id ? "opacity-40" : ""}`}
               onClick={() => !editingId && setActiveCalendar(cal.id)}
             >
               <div
@@ -246,7 +324,7 @@ export default function Sidebar({ user }: { user: User }) {
                       </button>
                       {calendars.length > 1 && (
                         <button
-                          onClick={() => deleteCalendar(cal.id)}
+                          onClick={() => setDeleteConfirm(cal)}
                           className="text-[11px] text-red-400 hover:text-red-300"
                         >
                           Delete
@@ -298,17 +376,13 @@ export default function Sidebar({ user }: { user: User }) {
         )}
       </div>
 
-      {/* Bottom: Profile / user section */}
-      <div className="border-t border-[#2a2a2a] py-0">
-        {/* Expanded panel: logout + settings */}
+      {/* Bottom: Profile */}
+      <div className="border-t border-[#2a2a2a] py-3">
         <div
           className={`overflow-hidden transition-all duration-300 ${showProfile && !collapsed ? "max-h-24 opacity-100" : "max-h-0 opacity-0"}`}
         >
           <div className="pb-1 border-b border-[#2a2a2a] mb-1">
-            <button
-              onClick={() => {}}
-              className="flex items-center gap-3 text-sm text-[#888] hover:text-white transition-colors w-full py-2 px-3 hover:bg-[#1e1e1e]"
-            >
+            <button className="flex items-center gap-3 text-sm text-[#888] hover:text-white transition-colors w-full py-2 px-3 hover:bg-[#1e1e1e]">
               <Settings size={14} />
               Settings
             </button>
@@ -321,8 +395,6 @@ export default function Sidebar({ user }: { user: User }) {
             </button>
           </div>
         </div>
-
-        {/* Profile row */}
         <div
           onClick={() => {
             if (collapsed) {
